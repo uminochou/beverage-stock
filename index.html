@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+:root{--navy:#23404f;--sky:#0f9ad8;--aqua:#1fa463;--coral:#f26a1b;--warn:#d9480f;--sun:#ffc933;--bg:#f2faff;--line:#cfe6f3}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--navy);font-family:"Yu Gothic","Hiragino Sans",sans-serif;font-size:16px}
+header{background:linear-gradient(90deg,#0f9ad8,#2bc0c9);color:#fff;padding:14px 16px;font-weight:700;font-size:18px}
+nav{display:flex;background:#fff;border-bottom:1px solid var(--line)}
+nav button{flex:1;padding:14px;border:0;background:none;font:inherit;color:#6b8291;border-bottom:3px solid transparent}
+nav button.on{color:var(--navy);border-color:var(--sun);font-weight:700}
+main{max-width:560px;margin:0 auto;padding:16px}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px;box-shadow:0 2px 8px rgba(15,154,216,.10)}
+#reader{width:100%;border-radius:10px;overflow:hidden;background:#000;min-height:0}
+button.btn{width:100%;padding:14px;border:0;border-radius:10px;font:inherit;font-weight:700;color:#fff;background:var(--sky)}
+button.in{background:var(--aqua)}button.out{background:var(--coral)}
+input,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;font:inherit;margin-top:6px}
+label{display:block;margin-top:10px;font-size:14px;color:#54707f}
+.row{display:flex;gap:10px}.row>*{flex:1}
+.name{font-size:20px;font-weight:700}.sub{color:#54707f;font-size:14px}
+.stock{font-size:34px;font-weight:700}
+.low{color:var(--warn)}
+table{width:100%;border-collapse:collapse}
+td,th{padding:10px 6px;border-bottom:1px solid var(--line);text-align:left;font-size:15px}
+td.n,th.n{text-align:right}
+tr.lowrow td{background:#fff3e0}
+#msg{position:fixed;left:16px;right:16px;bottom:16px;padding:14px;border-radius:8px;color:#fff;background:var(--sky);display:none;text-align:center}
+#msg.err{background:var(--coral)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header>飲料在庫管理</header>
+<nav><button id="t1" class="on" onclick="tab(1)">入出庫</button><button id="t2" onclick="tab(2)">在庫一覧</button></nav>
+<main>
+<section id="p1">
+  <div class="card">
+    <div id="reader"></div>
+    <button class="btn" id="scanBtn" onclick="startScan()" style="margin-top:10px">カメラでバーコードを読む</button>
+    <button class="btn" id="photoBtn" onclick="$('photo').click()" style="margin-top:10px;background:var(--aqua)">写真で読み取る（予備）</button>
+    <input type="file" id="photo" accept="image/*" capture="environment" class="hide" onchange="scanPhoto(this)">
+    <label>読めないときは商品コードを入力</label>
+    <div class="row"><input id="manual" inputmode="numeric" placeholder="4901234567894"><button class="btn" style="flex:0 0 90px" onclick="lookup($('manual').value.trim())">検索</button></div>
+  </div>
+
+  <div class="card hide" id="prod">
+    <div class="name" id="pName"></div><div class="sub" id="pSpec"></div>
+    <div class="sub" style="margin-top:8px">現在庫</div><div class="stock" id="pStock"></div>
+    <div class="row">
+      <div><label>数量</label><input id="qty" type="number" inputmode="numeric" min="1" value="1"></div>
+      <div><label>単位</label><select id="unit"></select></div>
+    </div>
+    <label>担当者</label><input id="who" placeholder="名前">
+    <label>メモ（任意）</label><input id="memo">
+    <div class="row" style="margin-top:14px"><button class="btn in" onclick="send('入庫')">入庫</button><button class="btn out" onclick="send('出庫')">出庫</button></div>
+  </div>
+
+  <div class="card hide" id="reg">
+    <div class="name">新しい商品を登録</div><div class="sub" id="regCode"></div>
+    <label>商品名</label><input id="rName" placeholder="例：ウーロン茶 500ml">
+    <label>規格</label><input id="rSpec" placeholder="例：ペット">
+    <div class="row">
+      <div><label>1ケースの本数</label><input id="rCase" type="number" inputmode="numeric" value="24"></div>
+      <div><label>発注点（本）</label><input id="rReorder" type="number" inputmode="numeric" value="0"></div>
+    </div>
+    <button class="btn" style="margin-top:14px" onclick="register()">登録する</button>
+  </div>
+</section>
+
+<section id="p2" class="hide">
+  <div class="card"><table><thead><tr><th>商品</th><th class="n">在庫（本）</th><th class="n">発注点</th></tr></thead><tbody id="list"></tbody></table></div>
+</section>
+</main>
+<div id="msg"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const API = 'https://script.google.com/macros/s/AKfycbwiakgqg1vTzOihIXibiE_pzrwWuBzEG-7HrYYMTpKMnhpYoCOlmGM75I-BQ013G51FZw/exec';
+let PASS = ''; try { PASS = localStorage.getItem('pass') || ''; } catch (e) {}
+async function call(fn, ...args) {
+  if (!PASS) PASS = (prompt('合言葉を入力してください') || '').trim();
+  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ pass: PASS, fn, args }) });
+  const j = await r.json();
+  if (!j.ok) {
+    if (j.error.indexOf('合言葉') >= 0) { PASS = ''; try { localStorage.removeItem('pass'); } catch (e) {} }
+    throw new Error(j.error);
+  }
+  try { localStorage.setItem('pass', PASS); } catch (e) {}
+  return j.data;
+}
+let scanner = null, cur = null, pendingCode = '';
+
+try { $('who').value = localStorage.getItem('who') || ''; } catch (e) {}
+
+function toast(t, err) {
+  const m = $('msg'); m.textContent = t; m.className = err ? 'err' : ''; m.style.display = 'block';
+  setTimeout(() => m.style.display = 'none', 2600);
+}
+const errText = e => (e && e.message ? e.message : String(e)).replace(/^Error: /, '');
+
+function tab(n) {
+  $('p1').classList.toggle('hide', n !== 1); $('p2').classList.toggle('hide', n !== 2);
+  $('t1').classList.toggle('on', n === 1); $('t2').classList.toggle('on', n === 2);
+  if (n === 2) loadStock();
+}
+
+function getScanner() {
+  if (!scanner) scanner = new Html5Qrcode('reader', {
+    formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A],
+    useBarCodeDetectorIfSupported: true, verbose: false });
+  return scanner;
+}
+async function scanPhoto(input) {
+  const f = input.files && input.files[0]; if (!f) return;
+  try { lookup(await getScanner().scanFile(f, false)); }
+  catch (e) { toast('バーコードを読み取れませんでした。近づいてピントを合わせ、撮り直してください', true); }
+  input.value = '';
+}
+async function startScan() {
+  try {
+    getScanner();
+    $('scanBtn').classList.add('hide');
+    await scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 260, height: 120 } }, async code => {
+      await stopScan(); if (navigator.vibrate) navigator.vibrate(60); lookup(code);
+    });
+  } catch (e) {
+    $('scanBtn').classList.remove('hide');
+    toast('カメラを起動できません。ブラウザのカメラ許可を確認してください（「写真で読み取る」も使えます）', true);
+  }
+}
+async function stopScan() {
+  if (scanner && scanner.isScanning) await scanner.stop();
+  $('scanBtn').classList.remove('hide');
+}
+
+async function lookup(code) {
+  if (!code) return;
+  $('prod').classList.add('hide'); $('reg').classList.add('hide');
+  try {
+    const p = await call('getProduct', code);
+    if (p) showProduct(p);
+    else { pendingCode = code; $('regCode').textContent = 'コード：' + code; $('reg').classList.remove('hide'); $('rName').focus(); }
+  } catch (e) { toast(errText(e), true); }
+}
+
+function showProduct(p) {
+  cur = p;
+  $('pName').textContent = p.name; $('pSpec').textContent = p.spec;
+  $('pStock').textContent = p.stock + ' 本';
+  $('pStock').classList.toggle('low', p.stock <= p.reorder);
+  $('unit').innerHTML = '<option value="1">本</option>' + (p.perCase > 1 ? '<option value="' + p.perCase + '">ケース（' + p.perCase + '本）</option>' : '');
+  $('qty').value = 1; $('memo').value = '';
+  $('prod').classList.remove('hide');
+}
+
+async function register() {
+  try {
+    const p = await call('registerProduct', { code: pendingCode, name: $('rName').value.trim(), spec: $('rSpec').value.trim(),
+      perCase: $('rCase').value, reorder: $('rReorder').value });
+    $('reg').classList.add('hide'); toast('登録しました'); showProduct(p);
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function send(type) {
+  if (!cur) return;
+  const qty = Number($('qty').value) * Number($('unit').value);
+  const who = $('who').value.trim();
+  try { localStorage.setItem('who', who); } catch (e) {}
+  try {
+    const p = await call('recordMove', { code: cur.code, type, qty, who, memo: $('memo').value });
+    toast(p.name + ' を' + type + '：' + qty + '本（現在庫 ' + p.stock + '本）');
+    $('prod').classList.add('hide'); $('manual').value = '';
+  } catch (e) { toast(errText(e), true); }
+}
+
+async function loadStock() {
+  try {
+    const rows = await call('getStock');
+    $('list').innerHTML = rows.length ? rows.map(p => {
+      const low = p.stock <= p.reorder;
+      return '<tr class="' + (low ? 'lowrow' : '') + '"><td>' + esc(p.name) + '<div class="sub">' + esc(p.spec) + '</div></td>' +
+        '<td class="n' + (low ? ' low' : '') + '"><b>' + p.stock + '</b></td><td class="n">' + p.reorder + '</td></tr>';
+    }).join('') : '<tr><td colspan="3">商品が未登録です。バーコードを読んで登録してください。</td></tr>';
+  } catch (e) { toast(errText(e), true); }
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+</script>
+</body>
+</html>
